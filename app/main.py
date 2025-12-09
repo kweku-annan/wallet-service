@@ -5,7 +5,7 @@ from app.core.config import get_settings
 from app.database import engine, Base
 
 # Import all models to register them with SQLAlchemy
-from app.models import User, Wallet, Transaction
+from app.models import User, Wallet, Transaction, APIKey
 
 settings = get_settings()
 

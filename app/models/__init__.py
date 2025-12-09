@@ -8,6 +8,7 @@ and create the corresponding database tables.
 from app.models.user import User
 from app.models.wallet import Wallet
 from app.models.transaction import Transaction, TransactionType, TransactionStatus
+from app.models.api_key import APIKey
 
 __all__ = [
     "User",
@@ -15,4 +16,5 @@ __all__ = [
     "Transaction",
     "TransactionType",
     "TransactionStatus",
+    "APIKey",
 ]
