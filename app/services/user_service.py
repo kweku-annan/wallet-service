@@ -43,11 +43,13 @@ class UserService:
     @staticmethod
     def create_user(db: Session, user_data: UserCreate) -> User:
         """
-        Create a new user in the database.
+        Create a new user in the database. Also automatically creates a wallet.
         :param db: Database session
         :param user_data: User creation data
-        :return: Newly created user object
+        :return: Newly created user object with wallet
         """
+        from app.services.wallet_service import WalletService
+
         db_user = User(
             email=user_data.email,
             google_id=user_data.google_id,
@@ -58,6 +60,10 @@ class UserService:
         db.add(db_user)
         db.commit()
         db.refresh(db_user) # Refresh to get the ID and timestamps
+
+        # Auto-create wallet for the new user
+        WalletService.create_wallet_for_user(db, db_user)
+        db.refresh(db_user) # Refresh again to include the wallet relationship
 
         return db_user
 

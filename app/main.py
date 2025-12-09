@@ -4,6 +4,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.core.config import get_settings
 from app.database import engine, Base
 
+# Import all models to register them with SQLAlchemy
+from app.models import User, Wallet, Transaction
+
 settings = get_settings()
 
 # Create FastAPI app instance
@@ -72,6 +75,7 @@ async def health_check():
     }
 
 # Import and include API routers
-from app.api import auth
+from app.api import auth, wallet
 
 app.include_router(auth.router)
+app.include_router(wallet.router)
