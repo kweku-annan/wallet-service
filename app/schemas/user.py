@@ -23,7 +23,7 @@ class UserResponse(UserBase):
     """
     Schema for user responses (what we send to the client).
     """
-    id: int
+    id: str
     google_id: str
     profile_picture: Optional[str] = None
     is_active: bool

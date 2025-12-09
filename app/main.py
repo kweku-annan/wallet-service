@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from app.core.config import get_settings
 from app.database import engine, Base
 
@@ -11,6 +12,9 @@ app = FastAPI(
     debug=settings.DEBUG,
     version="1.0.0"
 )
+
+# Session middleware - required for OAuth2 flows
+app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
 
 # CORS middleware - allows frontend from different origins to call the API
 app.add_middleware(
@@ -54,3 +58,20 @@ async def root():
         "status": "healthy",
         "version": "1.0.0"
     }
+
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint.
+    :return:
+    """
+    return {
+        "status": "healthy",
+        "database": "connected",
+        "app_name": settings.APP_NAME
+    }
+
+# Import and include API routers
+from app.api import auth
+
+app.include_router(auth.router)
