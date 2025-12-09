@@ -31,6 +31,16 @@ class UserService:
         return db.query(User).filter(User.google_id == google_id).first()
 
     @staticmethod
+    def get_user_by_id(db: Session, user_id: str) -> Optional[User]:
+        """
+        Find a user by their ID.
+        :param db: Database session
+        :param user_id: User's ID
+        :return: User object if found, None otherwise
+        """
+        return db.query(User).filter(User.id == user_id).first()
+
+    @staticmethod
     def create_user(db: Session, user_data: UserCreate) -> User:
         """
         Create a new user in the database.
