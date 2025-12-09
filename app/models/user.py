@@ -30,7 +30,7 @@ class User(Base):
 
     # Relationships
     wallet = relationship("Wallet", back_populates="user", uselist=False, cascade="all, delete-orphan")
-    # api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
+    api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
     transactions = relationship("Transaction", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
