@@ -267,7 +267,7 @@ class WalletService:
                 wallet_id=sender_wallet.id,
                 transaction_type=TransactionType.TRANSFER,
                 amount=amount,
-                status=TransactionStatus.SUCCESS,
+                transaction_status=TransactionStatus.SUCCESS,
                 recipient_wallet_number=recipient_wallet_number,
                 description=f"Transfer to wallet {recipient_wallet_number}"
             )

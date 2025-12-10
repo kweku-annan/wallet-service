@@ -19,6 +19,7 @@ from app.schemas.paystack import (
     DepositStatusResponse,
     PaystackWebhookEvent
 )
+from app.schemas.transfer import TransferRequest, TransferResponse
 from typing import List, Tuple
 
 # Create router
@@ -513,29 +514,32 @@ async def check_deposit_status(
         amount=transaction.amount
     )
 
+
 @router.get("/transactions", response_model=List[TransactionHistoryResponse])
 async def get_transaction_history(
         auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key_swagger),
         _: None = Depends(require_permission("read")),
         db: Session = Depends(get_db),
         limit: int = 50,
-        offset: int = 0,
+        offset: int = 0
 ):
     """
-    Get current user's wallet transaction history.
+    Get user's transaction history.
 
     Requires:
     - JWT authentication OR
     - API key with 'read' permission
 
-    :param auth_data:
-    :param _:
-    :param db:
-    :return: List of transactions
+    Query Parameters:
+    - limit: Maximum number of transactions (default: 50)
+    - offset: Number of transactions to skip (default: 0)
+
+    Returns:
+        List of transactions with type, amount, and status
     """
     user, api_key = auth_data
 
-    # Fetch transactions
+    # Get transactions
     transactions = WalletService.get_user_transaction(
         db=db,
         user_id=user.id,
@@ -551,3 +555,48 @@ async def get_transaction_history(
         )
         for txn in transactions
     ]
+
+
+@router.post("/transfer", response_model=TransferResponse, status_code=status.HTTP_200_OK)
+async def transfer_funds(
+        request: TransferRequest,
+        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key_swagger),
+        _: None = Depends(require_permission("transfer")),
+        db: Session = Depends(get_db)
+):
+    """
+    Transfer funds from your wallet to another user's wallet.
+
+    Process:
+    1. Validates recipient wallet exists
+    2. Checks sender has sufficient balance
+    3. Deducts from sender wallet
+    4. Credits recipient wallet
+    5. Creates transaction records for both users
+
+    This is an ATOMIC operation - either completes fully or fails completely.
+
+    Requires:
+    - JWT authentication OR
+    - API key with 'transfer' permission
+
+    Returns:
+        Transfer confirmation with new balance
+    """
+    user, api_key = auth_data
+
+    # Perform the transfer (atomic operation)
+    sender_wallet, recipient_wallet = WalletService.transfer_funds(
+        db=db,
+        sender=user,
+        recipient_wallet_number=request.wallet_number,
+        amount=request.amount
+    )
+
+    return TransferResponse(
+        status="success",
+        message="Transfer completed",
+        amount=request.amount,
+        recipient_wallet_number=request.wallet_number,
+        sender_balance=sender_wallet.balance
+    )

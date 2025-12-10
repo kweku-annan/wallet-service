@@ -12,7 +12,7 @@ class TransferRequest(BaseModel):
     def validate_wallet_number(cls, v):
         """Validate wallet number format"""
         # Remove any spaces or dashes
-        v = v.replace(' ', '').replace()
+        v = v.replace(' ', '').replace('-', '')
 
         if not v.isdigit():
             raise ValueError("Wallet number must contain only digits")
