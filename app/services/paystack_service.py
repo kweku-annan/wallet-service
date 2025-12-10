@@ -63,7 +63,7 @@ class PaystackService:
             "email": email,
             "amount": amount_kobo,
             "reference": reference,
-            "callback_url": settings.GOOGLE_REDIRECT_URI
+            "callback_url": settings.PAYSTACK_CALLBACK_URL
         }
         try:
             response = requests.post(url, json=payload, headers=headers)

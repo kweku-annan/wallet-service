@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
 from app.models.api_key import APIKey
 from app.models.transaction import TransactionType, TransactionStatus
-from app.middleware.auth import get_current_user, get_current_user_or_api_key, require_permission
+from app.middleware.auth import get_current_user, get_current_user_or_api_key_swagger, require_permission
 from app.services.paystack_service import PaystackService
 from app.services.wallet_service import WalletService
 from app.schemas.wallet import (
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/wallet", tags=["Wallet"])
 
 @router.get("/balance", response_model=WalletBalanceResponse)
 async def get_wallet_balance(
-        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key),
+        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key_swagger),
         _: None = Depends(require_permission("read")),
         db: Session = Depends(get_db),
 ):
@@ -81,7 +82,7 @@ async def get_wallet_details(
 @router.post("/deposit", response_model=DepositResponse, status_code=status.HTTP_201_CREATED)
 async def initiate_deposit(
         request: DepositRequest,
-        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key),
+        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key_swagger),
         _: None = Depends(require_permission("deposit")),
         db: Session = Depends(get_db),
 ):
@@ -122,9 +123,10 @@ async def initiate_deposit(
         user_id=user.id,
         wallet_id=wallet.id,
         amount=request.amount,
-        status=TransactionStatus.PENDING,
+        transaction_status=TransactionStatus.PENDING,
         reference=reference,
-        description=f"Deposit via Paystack"
+        description=f"Deposit via Paystack",
+        transaction_type=TransactionType.DEPOSIT,
     )
 
     return DepositResponse(
@@ -199,7 +201,7 @@ async def paystack_webhook(
     # Find transaction in database
     transaction = WalletService.get_transaction_by_reference(db, reference)
 
-    if not transaction
+    if not transaction:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Transaction not found: {reference}"
@@ -252,14 +254,223 @@ async def paystack_webhook(
         db.commit()
 
         return {
-            "status": True
+            "status": True,
             "message": "Transaction failed"
         }
+
+@router.get("/paystack/callback", response_class=HTMLResponse)
+async def paystack_callback(
+        reference: str = Query(..., description="Payment reference"),
+        db: Session = Depends(get_db),
+):
+    """
+    Paystack payment callback endpoint.
+    
+    This endpoint is called by Paystack after a user completes payment.
+    It provides immediate feedback to the user about their payment status.
+    
+    Flow:
+    1. User completes payment on Paystack
+    2. Paystack redirects to this endpoint with reference
+    3. We verify the transaction with Paystack API
+    4. Update transaction status if webhook hasn't processed it yet
+    5. Display user-friendly success/failure message
+    
+    Note: The webhook is the primary mechanism for crediting wallets.
+    This callback serves as a backup and provides user feedback.
+    
+    :param reference: Transaction reference from Paystack
+    :param db: Database session
+    :return: HTML response with payment status
+    """
+    try:
+        # Find transaction in database
+        transaction = WalletService.get_transaction_by_reference(db, reference)
+        
+        if not transaction:
+            return f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Payment Error</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                    .error {{ color: #d32f2f; }}
+                </style>
+            </head>
+            <body>
+                <h1 class="error">Transaction Not Found</h1>
+                <p>Invalid payment reference: {reference}</p>
+            </body>
+            </html>
+            """
+        
+        # Check if already processed
+        if transaction.status == TransactionStatus.SUCCESS:
+            return f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Payment Success</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                    .success {{ color: #388e3c; }}
+                </style>
+            </head>
+            <body>
+                <h1 class="success">✓ Payment Successful!</h1>
+                <p>Amount: ₦{transaction.amount:,.2f}</p>
+                <p>Reference: {transaction.reference}</p>
+                <p>Your wallet has been credited.</p>
+            </body>
+            </html>
+            """
+        
+        # Verify transaction with Paystack
+        try:
+            paystack_data = PaystackService.verify_transaction(reference)
+            paystack_status = paystack_data.get("status")
+            amount_in_kobo = paystack_data.get("amount", 0)
+            amount = PaystackService.kobo_to_naira(amount_in_kobo)
+            
+            # Verify amounts match
+            if transaction.amount != amount:
+                transaction.status = TransactionStatus.FAILED
+                transaction.description = f"Amount mismatch: expected {transaction.amount}, got {amount}"
+                db.commit()
+                
+                return f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Payment Error</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                        .error {{ color: #d32f2f; }}
+                    </style>
+                </head>
+                <body>
+                    <h1 class="error">✗ Payment Failed</h1>
+                    <p>Transaction amount mismatch.</p>
+                    <p>Reference: {reference}</p>
+                </body>
+                </html>
+                """
+            
+            # Update transaction based on Paystack status
+            if paystack_status == "success":
+                # Credit wallet (idempotent - only if not already successful)
+                wallet = WalletService.get_wallet_by_user_id(db, transaction.user_id)
+                
+                if wallet:
+                    WalletService.update_balance(db, wallet, amount, operation="add")
+                    transaction.status = TransactionStatus.SUCCESS
+                    db.commit()
+                    
+                    return f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Payment Success</title>
+                        <style>
+                            body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                            .success {{ color: #388e3c; }}
+                        </style>
+                    </head>
+                    <body>
+                        <h1 class="success">✓ Payment Successful!</h1>
+                        <p>Amount: ₦{amount:,.2f}</p>
+                        <p>Reference: {reference}</p>
+                        <p>Your wallet has been credited.</p>
+                    </body>
+                    </html>
+                    """
+                else:
+                    return f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Payment Error</title>
+                        <style>
+                            body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                            .error {{ color: #d32f2f; }}
+                        </style>
+                    </head>
+                    <body>
+                        <h1 class="error">✗ Error</h1>
+                        <p>Wallet not found.</p>
+                        <p>Please contact support with reference: {reference}</p>
+                    </body>
+                    </html>
+                    """
+            else:
+                # Payment failed
+                transaction.status = TransactionStatus.FAILED
+                db.commit()
+                
+                return f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Payment Failed</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                        .error {{ color: #d32f2f; }}
+                    </style>
+                </head>
+                <body>
+                    <h1 class="error">✗ Payment Failed</h1>
+                    <p>Your payment was not successful.</p>
+                    <p>Reference: {reference}</p>
+                </body>
+                </html>
+                """
+                
+        except HTTPException as e:
+            # Paystack verification failed
+            return f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Payment Verification Error</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                    .error {{ color: #d32f2f; }}
+                </style>
+            </head>
+            <body>
+                <h1 class="error">✗ Verification Error</h1>
+                <p>Unable to verify payment with Paystack.</p>
+                <p>Reference: {reference}</p>
+                <p>Please check your wallet balance or contact support.</p>
+            </body>
+            </html>
+            """
+            
+    except Exception as e:
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Error</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                .error {{ color: #d32f2f; }}
+            </style>
+        </head>
+        <body>
+            <h1 class="error">✗ Error</h1>
+            <p>An unexpected error occurred.</p>
+            <p>Error: {str(e)}</p>
+        </body>
+        </html>
+        """
+
 
 @router.get("/deposit/{reference}/status", response_model=DepositStatusResponse)
 async def check_deposit_status(
         reference: str,
-        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key),
+        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key_swagger),
         _: None = Depends(require_permission("read")),
         db: Session = Depends(get_db),
 ):
@@ -304,7 +515,7 @@ async def check_deposit_status(
 
 @router.get("/transactions", response_model=List[TransactionHistoryResponse])
 async def get_transaction_history(
-        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key),
+        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key_swagger),
         _: None = Depends(require_permission("read")),
         db: Session = Depends(get_db),
         limit: int = 50,
@@ -340,4 +551,3 @@ async def get_transaction_history(
         )
         for txn in transactions
     ]
-)

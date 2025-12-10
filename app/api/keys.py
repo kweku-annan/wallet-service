@@ -116,7 +116,7 @@ async def rollover_api_key(
     )
 
 
-@router.delete("/{key_id", status_code=status.HTTP_200_OK)
+@router.delete("/{key_id}", status_code=status.HTTP_200_OK)
 async def revoke_api_key(
         key_id: str,
         current_user: User = Depends(get_current_user),

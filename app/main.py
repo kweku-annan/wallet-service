@@ -75,8 +75,9 @@ async def health_check():
     }
 
 # Import and include API routers
-from app.api import auth, wallet, keys
+from app.api import auth, wallet, keys, debug
 
 app.include_router(auth.router)
 app.include_router(wallet.router)
 app.include_router(keys.router)
+app.include_router(debug.router)

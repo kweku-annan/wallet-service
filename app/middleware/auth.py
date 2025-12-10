@@ -122,6 +122,18 @@ async def get_current_user_or_api_key(
                 user = UserService.get_user_by_id(db, user_id)
                 if user and user.is_active:
                     return user, None
+                elif user and not user.is_active:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="User account is inactive"
+                    )
+        
+        # Bearer token was provided but is invalid
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired JWT token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     # Try API key
     if x_api_key:
@@ -135,8 +147,78 @@ async def get_current_user_or_api_key(
         # API key provided but invalid
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required. Provide either JWT token or API key."
+            detail="Invalid API key"
         )
+    
+    # Neither JWT nor API key provided
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Provide either JWT token or API key."
+    )
+
+
+
+async def get_current_user_or_api_key_swagger(
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+        x_api_key: Optional[str] = Header(None),
+        db: Session = Depends(get_db),
+) -> tuple[User, Optional[APIKey]]:
+    """
+    Dependency that accepts EITHER JWT token OR API key - Swagger UI compatible version.
+    
+    This version uses HTTPBearer which works better with Swagger UI's built-in authentication UI.
+    
+    :param credentials: HTTPBearer credentials (optional)
+    :param x_api_key: API key header (optional)
+    :param db: Database Session
+    :return: Tuple of (User object, APIKey object or None)
+    :raises HTTPException if both auth methods fail or neither provided
+    """
+    # Try JWT first
+    if credentials:
+        token = credentials.credentials
+        payload = decode_access_token(token)
+
+        if payload:
+            user_id: str = payload.get("user_id")
+            if user_id:
+                user = UserService.get_user_by_id(db, user_id)
+                if user and user.is_active:
+                    return user, None
+                elif user and not user.is_active:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="User account is inactive"
+                    )
+        
+        # Bearer token was provided but is invalid
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired JWT token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Try API key
+    if x_api_key:
+        api_key = APIKeyService.verify_api_key(db, x_api_key)
+
+        if api_key:
+            user = UserService.get_user_by_id(db, api_key.user_id)
+            if user and user.is_active:
+                return user, api_key
+
+        # API key provided but invalid
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+    
+    # Neither JWT nor API key provided
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Provide either JWT token or API key."
+    )
+
 
 def require_permission(
         permission: str
@@ -148,7 +230,7 @@ def require_permission(
     :return: Dependency function that validates permission
     """
     async def permission_checker(
-            auth_data: tuple = Depends(get_current_user_or_api_key)
+            auth_data: tuple = Depends(get_current_user_or_api_key_swagger)
     ) -> User:
         user, api_key = auth_data
 

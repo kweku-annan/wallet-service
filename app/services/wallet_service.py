@@ -111,7 +111,7 @@ class WalletService:
             raise ValueError(f"Invalid operation: {operation}. Use 'add' or 'subtract'.")
 
         db.commit()
-        db.refresh()
+        db.refresh(wallet)
 
         return wallet
 
@@ -122,7 +122,7 @@ class WalletService:
             wallet_id: str,
             transaction_type: TransactionType,
             amount: float,
-            status: TransactionStatus = TransactionStatus.PENDING,
+            transaction_status: TransactionStatus = TransactionStatus.PENDING,
             reference: Optional[str] = None,
             recipient_wallet_number: Optional[str] = None,
             description: Optional[str] = None
@@ -134,7 +134,7 @@ class WalletService:
         :param wallet_id: Wallet's ID
         :param transaction_type: Type of transaction
         :param amount: Transaction amount
-        :param status:
+        :param transaction_status:
         :param reference:
         :param recipient_wallet_number:
         :param description:
@@ -145,7 +145,7 @@ class WalletService:
             wallet_id=wallet_id,
             type=transaction_type,
             amount=amount,
-            status=status,
+            status=transaction_status,
             reference=reference,
             recipient_wallet_number=recipient_wallet_number,
             description=description

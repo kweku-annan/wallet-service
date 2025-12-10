@@ -23,3 +23,8 @@ wheels/
 
 # Uv
 .python-version
+
+AUTH_FIX_SUMMARY.md
+SWAGGER_TESTING_GUIDE.md
+test_token.py
+tests/test_wallet_auth.py

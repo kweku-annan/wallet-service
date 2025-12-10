@@ -17,12 +17,13 @@ class Settings(BaseSettings):
     # Google OAuth settings.
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
-    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/auth/google/callback"
+    GOOGLE_REDIRECT_URI: str = ""
 
     # Paystack
     PAYSTACK_SECRET_KEY: str = ""
     PAYSTACK_PUBLIC_KEY: str = ""
-    PAYSTACK_WEBHOOK_URL: str = "http://localhost:8000/wallet/paystack/webhook"
+    PAYSTACK_WEBHOOK_URL: str = ""
+    PAYSTACK_CALLBACK_URL: str = ""
 
     # App settings.
     APP_NAME: str = "Wallet Service"
