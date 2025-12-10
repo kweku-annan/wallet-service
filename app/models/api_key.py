@@ -53,6 +53,17 @@ class APIKey(Base):
         return f"<APIKey {self.name} - {self.key_prefix}...>"
 
     @staticmethod
+    def generate_api_key() -> str:
+        """
+        Generate a secure random API Key.
+        :return: API key string
+        """
+        # Generate 32 random bytes and convert to hex (64 chars)
+        random_part = secrets.token_hex(16) # 32 hex chars
+        api_key = f"sk_live_{random_part}"
+        return api_key
+
+    @staticmethod
     def hash_api_key(api_key: str) -> str:
         """
         Hash an API Key for secure storage.

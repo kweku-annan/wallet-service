@@ -109,4 +109,4 @@ class APIKeyRolloverRequest(BaseModel):
         expires_at: datetime
         name: str
         permissions: List[str]
-        old_key: int Field(..., description="ID of the old key that was rolled over")
+        old_key: int = Field(..., description="ID of the old key that was rolled over")
