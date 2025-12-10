@@ -101,12 +101,12 @@ class APIKeyRolloverRequest(BaseModel):
         return v
 
 
-    class APIKeyRolloverResponse(BaseModel):
-        """
-        Schema for API key rollover response.
-        """
-        api_key: str = Field(..., description="The new API key - save this!")
-        expires_at: datetime
-        name: str
-        permissions: List[str]
-        old_key: int = Field(..., description="ID of the old key that was rolled over")
+class APIKeyRolloverResponse(BaseModel):
+    """
+    Schema for API key rollover response.
+    """
+    api_key: str = Field(..., description="The new API key - save this!")
+    expires_at: datetime
+    name: str
+    permissions: List[str]
+    old_key_id: str = Field(..., description="ID of the old key that was rolled over")
