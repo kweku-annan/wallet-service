@@ -185,3 +185,118 @@ class WalletService:
         return db.query(Transaction).filter(Transaction.user_id == user_id)\
         .order_by(Transaction.created_at.desc())\
         .limit(limit).offset(offset).all()
+
+    @staticmethod
+    def transfer_funds(
+            db: Session,
+            sender: User,
+            recipient_wallet_number: str,
+            amount: float,
+    ) -> tuple[Wallet, Wallet]:
+        """
+        Transfer funds from sender's wallet to recipient's wallet.
+
+        This is an ATOMIC operation - either both wallets are updated, or neither is.
+
+        Process:
+        1. Validate recipient wallet exists.
+        2. Check sender has sufficient balance.
+        3. Deduct amount from sender's wallet.
+        4. Credit to recipient
+        5. Create transaction records for both wallets.
+        :param db:
+        :param sender:
+        :param recipient_wallet_number:
+        :param amount:
+        :return:
+        """
+        # Get sender's wallet
+        sender_wallet = WalletService.get_wallet_by_user_id(db, sender.id)
+        if not sender_wallet:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Sender wallet not found"
+            )
+
+        # Get recipient's wallet
+        recipient_wallet = WalletService.get_wallet_by_wallet_number(db, recipient_wallet_number)
+        if not recipient_wallet:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Recipient wallet not found"
+            )
+
+        # Prevent self-transfer
+        if sender_wallet.id == recipient_wallet.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot transfer to your own wallet"
+            )
+
+        # Check if wallets are active
+        if not sender_wallet.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Sender wallet is inactive"
+            )
+
+        if not recipient_wallet.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Recipient wallet is inactive"
+            )
+
+        # Check sufficient balance
+        if sender_wallet.balance < amount:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Insufficient balance. Available: {sender_wallet.balance}, Required: {amount}"
+            )
+
+        try:
+            # ATOMIC OPERATION: Deduct from sender
+            sender_wallet.balance -= amount
+
+            # ATOMIC OPERATION: Credit to recipient
+            recipient_wallet.balance += amount
+
+            # Create transaction record for SENDER (debit/outgoing)
+            sender_transaction = WalletService.create_transaction(
+                db=db,
+                user_id=sender.id,
+                wallet_id=sender_wallet.id,
+                transaction_type=TransactionType.TRANSFER,
+                amount=amount,
+                status=TransactionStatus.SUCCESS,
+                recipient_wallet_number=recipient_wallet_number,
+                description=f"Transfer to wallet {recipient_wallet_number}"
+            )
+
+            # Create transaction record for RECIPIENT (credit/incoming)
+            recipient_transaction = WalletService.create_transaction(
+                db=db,
+                user_id=recipient_wallet.user_id,
+                wallet_id=recipient_wallet.id,
+                transaction_type=TransactionType.DEPOSIT,
+                amount=amount,
+                transaction_status=TransactionStatus.SUCCESS,
+                description=f"Transfer from wallet {sender_wallet.wallet_number}"
+            )
+
+            # Commit all changes atomically
+            db.commit()
+
+            # Refresh to get updated balances
+            db.refresh(sender_wallet)
+            db.refresh(recipient_wallet)
+
+            return sender_wallet, recipient_wallet
+
+        except Exception as e:
+            # Rollback on any error
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Transfer failed: {str(e)}"
+            )
+
