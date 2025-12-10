@@ -18,7 +18,7 @@ class DepositRequest(BaseModel):
         return round(v, 2) # Round to 2 decimal places
 
 
-class DeppositResponse(BaseModel):
+class DepositResponse(BaseModel):
     """
     Schema for deposit initialization response from Paystack.
     """

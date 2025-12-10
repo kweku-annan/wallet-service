@@ -1,10 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
-from app.middleware.auth import get_current_user
+from app.models.api_key import APIKey
+from app.models.transaction import TransactionType, TransactionStatus
+from app.middleware.auth import get_current_user, get_current_user_or_api_key, require_permission
+from app.services.paystack_service import PaystackService
 from app.services.wallet_service import WalletService
-from app.schemas.wallet import WalletResponse, WalletBalanceResponse
+from app.schemas.wallet import (
+    WalletResponse,
+    WalletBalanceResponse,
+    TransactionHistoryResponse
+)
+from app.schemas.paystack import (
+    DepositRequest,
+    DepositResponse,
+    DepositStatusResponse,
+    PaystackWebhookEvent
+)
+from typing import List, Tuple
 
 # Create router
 router = APIRouter(prefix="/wallet", tags=["Wallet"])
@@ -12,20 +26,23 @@ router = APIRouter(prefix="/wallet", tags=["Wallet"])
 
 @router.get("/balance", response_model=WalletBalanceResponse)
 async def get_wallet_balance(
-        current_user: User = Depends(get_current_user),
+        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key),
+        _: None = Depends(require_permission("read")),
         db: Session = Depends(get_db),
 ):
     """
-    Get current user's wallet balance.
+     Get current user's wallet balance.
 
-    Requires JWT authentication.
+    Requires:
+    - JWT authentication OR
+    - API key with 'read' permission
 
-    :param current_user:
-    :param db:
-    :return: Wallet balance
+    Returns:
+        Wallet balance
     """
+    user, api_key = auth_data
     # Get user's wallet
-    wallet = WalletService.get_wallet_by_user_id(db, current_user.id)
+    wallet = WalletService.get_wallet_by_user_id(db, user.id)
 
     if not wallet:
         raise HTTPException(
@@ -44,7 +61,7 @@ async def get_wallet_details(
     """
     Get current user's wallet details including wallet number and balance.
 
-    Requires JWT authentication.
+    Requires JWT authentication. (not available via API Key for security reasons)
     :param current_user:
     :param db:
     :return: Full wallet information
@@ -60,3 +77,267 @@ async def get_wallet_details(
         )
 
     return WalletResponse.model_validate(wallet)
+
+@router.post("/deposit", response_model=DepositResponse, status_code=status.HTTP_201_CREATED)
+async def initiate_deposit(
+        request: DepositRequest,
+        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key),
+        _: None = Depends(require_permission("deposit")),
+        db: Session = Depends(get_db),
+):
+    """
+    Initialize a wallet deposit using Paystack.
+
+    Flow:
+    1. User requests a deposit with an amount.
+    2. Server initializes Paystack transaction.
+    3. Server returns Paystack payment URL.
+    4. User completes payment on Paystack.
+    5. Paystack sends webhook to credit wallet.
+
+    Requires:
+    - JWT authentication OR
+    - API key with 'deposit' permission
+
+    :param request:
+    :param auth_data:
+    :param _:
+    :param db:
+    :return: Payment reference and Paystack authorization URL
+    """
+    user, api_key = auth_data
+
+    # Get or create wallet
+    wallet = WalletService.get_or_create_wallet(db, user)
+
+    # Initialize Paystack transaction
+    reference, authorization_url = PaystackService.initialize_transaction(
+        email=user.email,
+        amount=request.amount
+    )
+
+    # Create transaction record (status: pending)
+    WalletService.create_transaction(
+        db=db,
+        user_id=user.id,
+        wallet_id=wallet.id,
+        amount=request.amount,
+        status=TransactionStatus.PENDING,
+        reference=reference,
+        description=f"Deposit via Paystack"
+    )
+
+    return DepositResponse(
+        reference=reference,
+        authorization_url=authorization_url,
+        amount=request.amount,
+    )
+
+@router.post("/paystack/webhook", status_code=status.HTTP_200_OK)
+async def paystack_webhook(
+        request: Request,
+        db: Session = Depends(get_db),
+):
+    """
+    Paystack webhook endpoint.
+
+    CRITICAL: This endpoint:
+    - Receives transaction updates from Paystack.
+    - Verifies webhook signature for security.
+    - Credits wallet ONLY after successful payment.
+    - Is idempotent (no double-crediting).
+
+    Security:
+    - Validates Paystack signature using HMAC SHA512
+    - Only processes 'charge.success' events.
+    - Ensures transaction reference is unique.
+
+    :param request:
+    :param db:
+    :return:
+    """
+    # Get raw body and signature
+    body = await request.body()
+    signature = request.headers.get("x-paystack-signature", "")
+
+    # Verify webhook signature
+    if not PaystackService.verify_webhook_signature(body, signature):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Paystack webhook signature."
+        )
+    # Parse webhook payload
+    try:
+        import json
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid JSON payload."
+        )
+    # Only process successful charge events
+    event = payload.get("event")
+    if event != "charge.success":
+        # Acknowledge other events but don't process them
+        return {"status": True, "message": f"Event '{event} acknowledged but not processed."}
+
+    # Extract transaction data
+    data = payload.get("data", {})
+    reference = data.get("reference")
+    amount_in_kobo = data.get("amount", 0)
+    paystack_status = data.get("status")
+
+    if not reference:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing transaction reference."
+        )
+
+    # Convert amount from kobo to Naira
+    amount = PaystackService.kobo_to_naira(amount_in_kobo)
+
+    # Find transaction in database
+    transaction = WalletService.get_transaction_by_reference(db, reference)
+
+    if not transaction
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Transaction not found: {reference}"
+        )
+
+    # IDEMPOTENCY CHECK: Don't credit twice
+    if transaction.status == TransactionStatus.SUCCESS:
+        # Transaction already processed
+        return {
+            "status": True,
+            "message": f"Transaction {reference} already processed."
+        }
+
+    # Verify if amounts match
+    if transaction.amount != amount:
+        transaction.status = TransactionStatus.FAILED
+        transaction.description = f"Amount mismatch: expected {transaction.amount}, got {amount}"
+        db.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Transaction amount mismatch."
+        )
+
+    # Update transaction status based on Paystack status
+    if paystack_status == "success":
+        # Credit wallet
+        wallet = WalletService.get_wallet_by_user_id(db, transaction.user_id)
+
+        if not wallet:
+            raise  HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Wallet not found for the user."
+            )
+
+        # Add funds to wallet
+        WalletService.update_balance(db, wallet, amount, operation="add")
+
+        # Update transaction status
+        transaction.status = TransactionStatus.SUCCESS
+        db.commit()
+
+        return {
+            "status": True,
+            "message": f"Wallet credited: {amount} NGN"
+        }
+    else:
+        # Transaction failed
+        transaction.status = TransactionStatus.FAILED
+        db.commit()
+
+        return {
+            "status": True
+            "message": "Transaction failed"
+        }
+
+@router.get("/deposit/{reference}/status", response_model=DepositStatusResponse)
+async def check_deposit_status(
+        reference: str,
+        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key),
+        _: None = Depends(require_permission("read")),
+        db: Session = Depends(get_db),
+):
+    """
+    Check the status of a deposit transaction by its reference.
+
+    This is manual check endpoint - it does NOT credit wallets.
+    Only the webhook endpoint credits wallets.
+
+    Requires:
+    - JWT authentication OR
+    - API key with 'read' permission
+    :param reference:
+    :param auth_data:
+    :param _:
+    :param db:
+    :return: Transaction status (pending, success, failed)
+    """
+    user, api_key = auth_data
+
+    # Find transaction
+    transaction = WalletService.get_transaction_by_reference(db, reference)
+
+    if not transaction:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Transaction not found: {reference}"
+        )
+
+    # Verify transaction belongs to user
+    if transaction.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to view this transaction."
+        )
+
+    return DepositStatusResponse(
+        reference=transaction.reference,
+        status=transaction.status.value,
+        amount=transaction.amount
+    )
+
+@router.get("/transactions", response_model=List[TransactionHistoryResponse])
+async def get_transaction_history(
+        auth_data: Tuple[User, APIKey | None] = Depends(get_current_user_or_api_key),
+        _: None = Depends(require_permission("read")),
+        db: Session = Depends(get_db),
+        limit: int = 50,
+        offset: int = 0,
+):
+    """
+    Get current user's wallet transaction history.
+
+    Requires:
+    - JWT authentication OR
+    - API key with 'read' permission
+
+    :param auth_data:
+    :param _:
+    :param db:
+    :return: List of transactions
+    """
+    user, api_key = auth_data
+
+    # Fetch transactions
+    transactions = WalletService.get_user_transaction(
+        db=db,
+        user_id=user.id,
+        limit=limit,
+        offset=offset
+    )
+
+    return [
+        TransactionHistoryResponse(
+            type=txn.type.value,
+            amount=txn.amount,
+            status=txn.status.value
+        )
+        for txn in transactions
+    ]
+)
