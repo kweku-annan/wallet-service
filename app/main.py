@@ -30,47 +30,9 @@ app = FastAPI(
             "name": "Wallet",
             "description": "Wallet operations including deposits, transfers, and transaction history"
         }
-    ],
-    # Configure security schemes for Swagger UI
-    swagger_ui_parameters={
-        "persistAuthorization": True,
-    }
+    ]
 )
 
-# Add security schemes to OpenAPI schema
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    
-    from fastapi.openapi.utils import get_openapi
-    
-    openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
-    
-    # Add security schemes for both JWT and API Key
-    openapi_schema["components"]["securitySchemes"] = {
-        "Bearer": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT",
-            "description": "Enter your JWT token from Google OAuth login"
-        },
-        "APIKey": {
-            "type": "apiKey",
-            "in": "header",
-            "name": "x-api-key",
-            "description": "Enter your API key for service-to-service access"
-        }
-    }
-    
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
-
-app.openapi = custom_openapi
 
 # Session middleware - required for OAuth2 flows
 app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
